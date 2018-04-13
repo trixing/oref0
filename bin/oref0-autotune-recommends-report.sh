@@ -86,7 +86,7 @@ end_time=23:30
 time=00:00
 minutes=0
 for h in $(seq -w 0 23); do
-    for m in 00 30; do
+    for m in 00; do
         time="$h:$m"
         minutes=$(echo "60 * $h + $m" | bc)
         #echo $time $minutes
@@ -111,10 +111,10 @@ do
   if [[ ${#basal_index_current} == 0 ]] && [[ ${#basal_index_new} == 0 ]]; then
     printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}s\n" ${time_list[$i]} "" "" >> $report_file
   elif [[ ${#basal_index_current} == 0 ]] && [[ ${#basal_index_new} != 0 ]]; then
-    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}.3f\n" ${time_list[$i]} "" $rate_new >> $report_file
+    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}.2f\n" ${time_list[$i]} "" $rate_new >> $report_file
   elif [[ ${#basal_index_current} != 0 ]] && [[ ${#basal_index_new} == 0 ]]; then
     printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}s\n" ${time_list[$i]} $rate_current "" >> $report_file
   else
-    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}.3f| %-${data_width}.3f\n" ${time_list[$i]} $rate_current $rate_new >> $report_file
+    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}.2f| %-${data_width}.2f\n" ${time_list[$i]} $rate_current $rate_new >> $report_file
   fi
 done

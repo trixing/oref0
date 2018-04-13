@@ -107,8 +107,9 @@ def assign_args_to_variables(args):
     if args.log is not None:
         RECOMMENDS_REPORT = args.logs
 
-def get_nightscout_profile(nightscout_host):
+def get_nightscout_profile(directory, nightscout_host):
     #TODO: Add ability to use API secret for Nightscout.
+    autotune_directory = os.path.join(directory, 'autotune')
     res = requests.get(nightscout_host + '/api/v1/profile.json')
     with open(os.path.join(autotune_directory, 'nightscout.profile.json'), 'w') as f:
         f.write(res.text)
@@ -238,7 +239,7 @@ if __name__ == "__main__":
     assign_args_to_variables(args)
     
     # TODO: Convert Nightscout profile to OpenAPS profile format.
-    #get_nightscout_profile(NIGHTSCOUT_HOST)
+    get_nightscout_profile(DIR, NIGHTSCOUT_HOST)
     
     get_openaps_profile(DIR)
     get_nightscout_carb_and_insulin_treatments(NIGHTSCOUT_HOST, START_DATE, END_DATE, DIR)
