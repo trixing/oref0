@@ -46,8 +46,8 @@ report_file=$directory/autotune/autotune_recommendations.log
 [ -f $report_file ] && rm $report_file
 
 # Report Column Widths
-parameter_width=15
-data_width=9
+parameter_width=10
+data_width=7
 
 # Get current profile info
 basal_minutes_current=( $(jq -r '.basalprofile[].minutes' $directory/autotune/profile.pump.json) )
@@ -65,19 +65,19 @@ carb_ratio_new=$(cat $directory/autotune/profile.json | jq '.carb_ratio')
 
 # Print Header Info
 printf "%-${parameter_width}s| %-${data_width}s| %-${data_width}s\n" "Parameter" "Pump" "Autotune" >> $report_file
-printf "%s\n" "-------------------------------------" >> $report_file
+printf "%s\n" "-----------------------------" >> $report_file
 
 # Print ISF, CSF and Carb Ratio Recommendations
-printf "%-${parameter_width}s| %-${data_width}.3f| %-${data_width}.3f\n" "ISF [mg/dL/U]" $isf_current $isf_new >> $report_file
+printf "%-${parameter_width}s| %-${data_width}.0f| %-${data_width}.0f\n" "ISF [/U]" $isf_current $isf_new >> $report_file
 # if [ $csf_current != null ]; then
   # printf "%-${parameter_width}s| %-${data_width}.3f| %-${data_width}.3f\n" "CSF [mg/dL/g]" $csf_current $csf_new >> $report_file
 # else
   # printf "%-${parameter_width}s| %-${data_width}s| %-${data_width}.3f\n" "CSF [mg/dL/g]" "n/a" $csf_new >> $report_file
 # fi
-printf "%-${parameter_width}s| %-${data_width}.3f| %-${data_width}.3f\n" "Carb Ratio[g/U]" $carb_ratio_current $carb_ratio_new >> $report_file
+printf "%-${parameter_width}s| %-${data_width}.1f| %-${data_width}.1f\n" "CR [g/U]" $carb_ratio_current $carb_ratio_new >> $report_file
 
 # Print Basal Profile Recommendations
-printf "%-${parameter_width}s| %-${data_width}s|\n" "Basals [U/hr]" "-" >> $report_file
+printf "%-${parameter_width}s| %-${data_width}s|\n" "Basal" "" >> $report_file
 
 # Build time_list array of H:M in 30 minute increments to mirror pump basal schedule
 time_list=()
@@ -111,10 +111,15 @@ do
   if [[ ${#basal_index_current} == 0 ]] && [[ ${#basal_index_new} == 0 ]]; then
     printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}s\n" ${time_list[$i]} "" "" >> $report_file
   elif [[ ${#basal_index_current} == 0 ]] && [[ ${#basal_index_new} != 0 ]]; then
-    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}.2f\n" ${time_list[$i]} "" $rate_new >> $report_file
+    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}.3f\n" ${time_list[$i]} "" $rate_new >> $report_file
   elif [[ ${#basal_index_current} != 0 ]] && [[ ${#basal_index_new} == 0 ]]; then
     printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}s| %-${data_width}s\n" ${time_list[$i]} $rate_current "" >> $report_file
   else
-    printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}.2f| %-${data_width}.2f\n" ${time_list[$i]} $rate_current $rate_new >> $report_file
+
+    if [[ $rate_new == $rate_current ]]; then
+    	printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}.3f| %-${data_width}s\n" ${time_list[$i]} $rate_current "" >> $report_file
+    else
+    	printf "  %-$(expr ${parameter_width} - 2)s| %-${data_width}.3f| %-${data_width}.3f\n" ${time_list[$i]} $rate_current $rate_new >> $report_file
+    fi
   fi
 done
