@@ -15,18 +15,32 @@
   THE SOFTWARE.
 */
 
-var basal = require('oref0/lib/profile/basal');
-var get_iob = require('oref0/lib/iob');
-var detect = require('oref0/lib/determine-basal/autosens');
+var basal = require('../lib/profile/basal');
+var detect = require('../lib/determine-basal/autosens');
 
 if (!module.parent) {
-    var glucose_input = process.argv[2];
-    var pumphistory_input = process.argv[3];
-    var profile_input = process.argv[4];
+    var detectsensitivity = init();
 
-    if (!glucose_input || !pumphistory_input || !profile_input) {
-        console.error('usage: ', process.argv.slice(0, 2), '<glucose.json> <pumphistory.json> <profile.json>');
+    var argv = require('yargs')
+        .usage("$0 <glucose.json> <pumphistory.json> <profile.json> <readings_per_run> [outputfile.json]")
+        .strict(true)
+        .help('help');
+
+    var params = argv.argv;
+    var inputs = params._;
+
+    if (inputs.length < 4 || inputs.length > 5) {
+        argv.showHelp();
         process.exit(1);
+    }
+
+    var glucose_input = inputs[0];
+    var pumphistory_input = inputs[1];
+    var profile_input = inputs[2];
+    var readings_per_run = inputs[3];
+    var output_file;
+    if (inputs.length === 5) {
+        output_file = inputs[4];
     }
 
     var fs = require('fs');
@@ -43,41 +57,52 @@ if (!module.parent) {
         var pumphistory_data = require(cwd + '/' + pumphistory_input);
         var profile = require(cwd + '/' + profile_input);
 
-        if (typeof(profile.isfProfile == "undefined")) {
-            //console.error(profile[0].store.Default.basal);
+
+        if (typeof profile.isfProfile === "undefined") {
+            for (var prop in profile[0].store) {
+                var profilename = prop;
+            }
+            //console.error(profilename);
+            //console.error(profile[0].store[profilename].basal);
+            //namedprofile = profile[0].store[profilename];
+            //console.error(profilename, namedprofile);
             profile =
             {
                 "min_5m_carbimpact": 8,
-                "dia": profile[0].store.Default.dia,
-                "basalprofile": profile[0].store.Default.basal.map(convertBasal),
+                "dia": profile[0].store[profilename].dia,
+                "basalprofile": profile[0].store[profilename].basal.map(convertBasal),
+                "sens": profile[0].store[profilename].sens[0].value,
                 "isfProfile": {
-                    "units": profile[0].store.Default.units,
+                    "units": profile[0].store[profilename].units,
                     "sensitivities": [
                     {
                         "i": 0,
-                        "start": profile[0].store.Default.sens[0].time + ":00",
-                        "sensitivity": profile[0].store.Default.sens[0].value,
+                        "start": profile[0].store[profilename].sens[0].time + ":00",
+                        "sensitivity": profile[0].store[profilename].sens[0].value,
                         "offset": 0,
                         "x": 0,
                         "endOffset": 1440
                     }
                     ]
                 },
-                "carb_ratio": profile[0].store.Default.carbratio[0].value,
+                "carb_ratio": profile[0].store[profilename].carbratio[0].value,
                 "autosens_max": 2.0,
                 "autosens_min": 0.5
             };
+            inputs = { "basals": profile.basalprofile };
+            profile.max_daily_basal = basal.maxDailyBasal(inputs);
           //console.error(profile);
         }
         var isf_data = profile.isfProfile;
-        if (typeof(isf_data) != "undefined" && typeof(isf_data.units == "string")) {
+        if (typeof isf_data !== "undefined" && typeof isf_data.units === "string") {
             if (isf_data.units !== 'mg/dL') {
-                if (isf_data.units == 'mg/dl') {
+                if (isf_data.units === 'mg/dl') {
                     isf_data.units = 'mg/dL';
                     profile.isfProfile.units = 'mg/dL';
-                } else if (isf_data.units == 'mmol/L') {
+                } else if (isf_data.units === 'mmol' || isf_data.units === 'mmol/L') {
                     for (var i = 0, len = isf_data.sensitivities.length; i < len; i++) {
                         isf_data.sensitivities[i].sensitivity = isf_data.sensitivities[i].sensitivity * 18;
+                        profile.sens = profile.sens * 18;
                     }
                     isf_data.units = 'mg/dL';
                 } else {
@@ -111,30 +136,46 @@ if (!module.parent) {
     do {
         detection_inputs.deviations = 96;
         detect(detection_inputs);
-        for(var i=0; i<10; i++) {
+        for(i=0; i<readings_per_run; i++) {
             detection_inputs.glucose_data.shift();
         }
-        console.error(ratio, newisf);
-        ratioArray.unshift(ratio);
+        console.error(ratio, newisf, detection_inputs.glucose_data[0].dateString);
+
+        var obj = {
+            "dateString": detection_inputs.glucose_data[0].dateString,
+            "sensitivityRatio": ratio,
+            "ISF": newisf
+        }
+        ratioArray.unshift(obj);
+        if (output_file) {
+            //console.error(output_file);
+            fs.writeFileSync(output_file, JSON.stringify(ratioArray)+"\n");
+        } else {
+            console.error(JSON.stringify(ratioArray));
+        }
     }
     while(detection_inputs.glucose_data.length > 96);
-    //var lowestRatio = Math.min(ratio8h, ratio24h);
-    //var sensAdj = {
-        //"ratio": lowestRatio
-    //}
     return console.log(JSON.stringify(ratioArray));
 
 }
 
+function init() {
+
+    return /* detectsensitivity */ {
+        name: 'detect-sensitivity'
+        , label: "OpenAPS Detect Sensitivity"
+    };
+}
+module.exports = init;
+
 
 function convertBasal(item)
 {
-    var convertedBasal = {
+    var start = item.time.split(":")
+    return {
       "start": item.time + ":00",
-      "minutes": Math.round(item.timeAsSeconds / 60),
+      "minutes": parseInt(start[0])*60 + parseInt(start[1]),
+      //"minutes": Math.round(item.timeAsSeconds / 60),
       "rate": item.value
   };
-  return convertedBasal;
 }
-
-

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 source $(dirname $0)/oref0-bash-common-functions.sh || (echo "ERROR: Failed to run oref0-bash-common-functions.sh. Is oref0 correctly installed?"; exit 1)
 
@@ -27,7 +27,7 @@ main() {
 
     pushover_snooze
     ns_temptargets || die "ns_temptargets failed"
-    ns_meal_carbs || die ", but ns_meal_carbs failed"
+    ns_meal_carbs || echo "ns_meal_carbs failed"
     battery_status
     upload
     touch /tmp/ns-loop-completed
@@ -74,6 +74,7 @@ function get_ns_bg {
 
     # copy cgm/glucose.json over to monitor/glucose.json if it's newer
     cp -pu cgm/glucose.json monitor/glucose.json
+    cat monitor/glucose.json | colorize_json '.[0] | { sgv: .sgv, dateString: .dateString }'
 }
 
 function completed_recently {
@@ -120,17 +121,41 @@ function ns_meal_carbs {
     nightscout ns $NIGHTSCOUT_HOST $API_SECRET carb_history > monitor/carbhistory.json.new
     cat monitor/carbhistory.json.new | jq .[0].carbs | egrep -q [0-9] && mv monitor/carbhistory.json.new monitor/carbhistory.json
     oref0-meal monitor/pumphistory-24h-zoned.json settings/profile.json monitor/clock-zoned.json monitor/glucose.json settings/basal_profile.json monitor/carbhistory.json > monitor/meal.json.new
-    grep -q COB monitor/meal.json.new && mv monitor/meal.json.new monitor/meal.json
+    #grep -q COB monitor/meal.json.new && mv monitor/meal.json.new monitor/meal.json
+    check_cp_meal || return 1
     echo -n "Refreshed carbhistory; COB: "
     grep COB monitor/meal.json | jq .mealCOB
 }
 
+function check_cp_meal {
+    if ! [ -s monitor/meal.json.new ]; then
+        echo meal.json.new not found
+        return 1
+    fi
+    if grep "Could not parse input data" monitor/meal.json.new; then
+        return 1
+    fi
+    if ! jq -e .carbs monitor/meal.json.new &>/dev/null; then
+        echo meal.json.new invalid:
+        cat monitor/meal.json.new
+        return 1
+    fi
+    cp monitor/meal.json.new monitor/meal.json
+    #cat monitor/meal.json | jq -C -c .
+}
 #sudo ~/src/EdisonVoltage/voltage json batteryVoltage battery > monitor/edison-battery.json
 function battery_status {
     if [ -e ~/src/EdisonVoltage/voltage ]; then
         sudo ~/src/EdisonVoltage/voltage json batteryVoltage battery | tee monitor/edison-battery.json | colorize_json
     elif [ -e /root/src/openaps-menu/scripts/getvoltage.sh ]; then
         sudo /root/src/openaps-menu/scripts/getvoltage.sh | tee monitor/edison-battery.json | colorize_json
+    elif [ -e monitor/low-battery.json ]; then
+        low=$(cat monitor/low-battery.json)
+        if [ "$low" = True ]; then
+          echo '{"batteryVoltage":3000, "battery":9}' | tee monitor/edison-battery.json
+        else
+          echo '{"batteryVoltage":3680, "battery":50}' | tee monitor/edison-battery.json
+        fi
     fi
 }
 
@@ -146,7 +171,7 @@ function upload_ns_status {
     grep -q iob monitor/iob.json || die "IOB not found"
     # set the timestamp on enact/suggested.json to match the deliverAt time
     touch -d $(cat enact/suggested.json | jq .deliverAt | sed 's/"//g') enact/suggested.json
-    if ! file_is_recent_and_min_size enact/suggested.json; then
+    if ! file_is_recent_and_min_size enact/suggested.json 10; then
         echo -n "No recent suggested.json found; last updated "
         ls -la enact/suggested.json | awk '{print $6,$7,$8}'
         return 1
@@ -177,7 +202,7 @@ function upload_recent_treatments {
 }
 
 function latest_ns_treatment_time {
-    nightscout latest-openaps-treatment $NIGHTSCOUT_HOST | json created_at
+    nightscout latest-openaps-treatment $NIGHTSCOUT_HOST $API_SECRET | jq -r .created_at
 }
 
 #nightscout cull-latest-openaps-treatments monitor/pumphistory-zoned.json settings/model.json $(openaps latest-ns-treatment-time) > upload/latest-treatments.json
@@ -192,7 +217,9 @@ function format_latest_nightscout_treatments {
         jq .[0:9] monitor/pumphistory-24h-zoned.json > upload/recent-pumphistory.json
         historyfile=upload/recent-pumphistory.json
     fi
-        nightscout cull-latest-openaps-treatments $historyfile settings/model.json $latest_ns_treatment_time > upload/latest-treatments.json
+
+    echo "Latest NS treatment: $latest_ns_treatment_time"
+    nightscout cull-latest-openaps-treatments $historyfile settings/model.json $latest_ns_treatment_time > upload/latest-treatments.json
 }
 
 function check_mdt_upload {

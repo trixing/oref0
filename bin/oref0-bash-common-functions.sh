@@ -87,6 +87,15 @@ is_edison () {
     fi
 }
 
+# Returns success (0) if running on a Debian Jessie system, fail (1) otherwise
+is_debian_jessie() {
+    if cat /etc/os-release | grep 'PRETTY_NAME="Debian GNU/Linux 8 (jessie)"' &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Returns success (0) if running on a Raspberry Pi, fail (1) otherwise. Uses
 # the existence of a "pi" account in /etc/passwd to determine that.
 is_pi () {
@@ -119,9 +128,16 @@ file_is_recent_and_min_size () {
     return $?
 }
 
+function mydate {
+    if [[ `uname` == 'Darwin' || `uname` == 'FreeBSD' || `uname` == 'OpenBSD' ]] ; then
+        gdate "$@"
+    else
+        date "$@"
+    fi
+}
 # Output the number of seconds since epoch (Jan 1 1970).
 epochtime_now () {
-    date +%s
+    mydate +%s
 }
 
 # Usage: to_epochtime <datetime>
@@ -130,7 +146,30 @@ epochtime_now () {
 # and newlines, and the string can be spread across multiple arguments (so
 # you don't need to quote the parameters to avoid word-splitting).
 to_epochtime () {
-    date -d "$(echo "$@" |tr -d '"\n')" +%s
+    mydate -d "$(echo "$@" |tr -d '"\n')" +%s
+}
+
+
+# recieves a line of text and logger name and creates a line in the following format:
+# timestamp logger-name message
+# This function is needed in order to create a log file that will look like:
+# 2019-01-27 02:13:15 openaps.pumploop Merging local temptargets: (NOT VALID JSON: empty) 
+# This files can be read with programs like chainsaw.
+adddate() {
+    while IFS= read -r line; do
+        echo "$(date  +"%Y-%m-%d %T") $1 $line"
+    done
+}
+
+# Remove the color Escape sequences from the logs, since some programs can not read them, and have their own coloring rules.
+uncolor () {
+     while IFS= read -r line; do
+        sed --expression="s/\o33\[[01]m//g" | 
+        sed --expression="s/\o33\[[01];39m//g" |
+        sed --expression="s/\o33\[[01];32m//g" |
+        sed --expression="s/\o33\[34;1m//g"  |
+        sed --expression="s/\o33\[1;30m//g" 
+     done
 }
 
 # Filter input to output, removing any embedded newlines.
@@ -154,13 +193,13 @@ noquotes () {
 # "(NOT VALID JSON: <reason>)" at the end. Return success in any case.
 colorize_json () {
     local INPUT="$(cat)"
-    
+
     if [[ "$INPUT" == "" ]]; then
         echo "(NOT VALID JSON: empty)"
     else
         local COLORIZED_OUTPUT
         COLORIZED_OUTPUT="$(echo "$INPUT" |jq -C -c "${@-.}" 2>&1)"
-        
+
         if [[ $? != 0 ]]; then
             # If jq returned failure, it also wrote an error message.
             echo "$INPUT (NOT VALID JSON: $(echo $COLORIZED_OUTPUT))"
@@ -193,7 +232,7 @@ script_is_sourced () {
 # something other than yes or no, ask the question again.
 prompt_yn () {
     while true; do
-        if [[ "$2" == "y" ]]; then
+        if [[ "$2" =~ ^[Yy]$ ]]; then
             read -p "$1 [Y]/n " -r
         else
             read -p "$1 y/[N] " -r
@@ -235,16 +274,16 @@ prompt_and_validate () {
     local QUESTION="$2"
     local VALIDATOR="${3-true}"
     local DEFAULT="$4"
-    
+
     local LAST_VALUE=""
-    
+
     while true; do
         if [[ $# -ge 4 ]]; then
             read -p "$QUESTION [$DEFAULT] " -r "$VARNAME"
         else
             read -p "$QUESTION " -r "$VARNAME"
         fi
-        
+
         if [[ "${!VARNAME}" == "" ]]; then
             # User entered the empty string? Use the default value, if there is one.
             if [[ $# -ge 4 ]]; then
@@ -393,7 +432,7 @@ get_pref_float () {
 get_pref_string () {
     RESULT="$(get_prefs_json |jq --exit-status --raw-output "$1")"
     RETURN_CODE=$?
-    
+
     if [[ $RETURN_CODE == 0 ]]; then
         echo "$RESULT"
         return 0
@@ -418,7 +457,7 @@ set_pref_json () {
     else
         local NEW_PREFS="$(echo '{}' |jq "$1 |= $2")"
     fi
-    
+
     # Write the whole file and move into place, so that the change is atomic
     echo "$NEW_PREFS" >"${PREFERENCES_FILE}.new"
     mv -f "${PREFERENCES_FILE}.new" "$PREFERENCES_FILE"
@@ -428,4 +467,48 @@ set_pref_json () {
 set_pref_string () {
     # TODO: Escape quotes and backslashes
     set_pref_json "$1" "\"$2\""
+}
+
+dedupe_path() {
+    #from https://unix.stackexchange.com/a/40973
+    if [ -n "$PATH" ]; then
+        old_PATH=$PATH:; PATH=
+        while [ -n "$old_PATH" ]; do
+            x=${old_PATH%%:*}       # the first remaining entry
+            case $PATH: in
+            *:"$x":*) ;;         # already there
+            *) PATH=$PATH:$x;;    # not there yet
+            esac
+            old_PATH=${old_PATH#*:}
+        done
+        PATH=${PATH#:}
+        unset old_PATH x
+    fi
+}
+
+# Usage: wait_for_silence <seconds of silence>
+# listen for $1 seconds of silence (no other rigs or enlite transmitter talking to pump) before continuing
+# If communication is detected, it'll retry to listen for $1 seconds.
+#
+# returns 0 if radio is free, 1 if radio is jammed for 800 iterations.
+function wait_for_silence {
+    if [ -z $1 ]; then
+        upto45s=$[ ( $RANDOM / 728 + 1) ]
+        waitfor=$upto45s
+    else
+        waitfor=$1
+    fi
+    echo -n "Listening for ${waitfor}s: "
+    for i in $(seq 1 800||gseq 1 800); do
+        echo -n .
+        # returns true if it hears pump comms, false otherwise
+        if ! listen -t $waitfor's' 2>&4 ; then
+            echo "No interfering pump comms detected from other rigs (this is a good thing!)"
+            echo -n "Continuing oref0-pump-loop at "; date
+            return 0
+        else
+            sleep 1
+        fi
+    done
+    return 1
 }
