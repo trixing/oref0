@@ -51,13 +51,17 @@ function pushover_snooze {
 
 
 function get_ns_bg {
-    #openaps get-ns-glucose > /dev/null
     # update 24h glucose file if it's 55m old or too small to calculate COB
     if ! file_is_recent cgm/ns-glucose-24h.json 54 \
-        || ! grep -c glucose cgm/ns-glucose-24h.json | jq -e '. > 36' >/dev/null; then
-        nightscout ns $NIGHTSCOUT_HOST $API_SECRET oref0_glucose_since -24hours > cgm/ns-glucose-24h.json
+        || ! jq . cgm/ns-glucose-24h.json | grep -c glucose | jq -e '. > 36' >/dev/null; then
+        #nightscout ns $NIGHTSCOUT_HOST $API_SECRET oref0_glucose_since -24hours > cgm/ns-glucose-24h.json
+        cp cgm/ns-glucose-24h.json cgm/ns-glucose-24h-temp.json
+        oref0-get-ns-entries cgm/ns-glucose-24h-temp.json $NIGHTSCOUT_HOST $API_SECRET 24 2>&1 >cgm/ns-glucose-24h.json
     fi
-    nightscout ns $NIGHTSCOUT_HOST $API_SECRET oref0_glucose_since -1hour > cgm/ns-glucose-1h.json
+    #nightscout ns $NIGHTSCOUT_HOST $API_SECRET oref0_glucose_since -1hour > cgm/ns-glucose-1h.json
+    cp cgm/ns-glucose-1h.json cgm/ns-glucose-1h-temp.json
+    oref0-get-ns-entries cgm/ns-glucose-1h-temp.json $NIGHTSCOUT_HOST $API_SECRET 1 2>&1 >cgm/ns-glucose-1h.json
+
     jq -s '.[0] + .[1]|unique|sort_by(.date)|reverse' cgm/ns-glucose-24h.json cgm/ns-glucose-1h.json > cgm/ns-glucose.json
     glucose_fresh # update timestamp on cgm/ns-glucose.json
     # if ns-glucose.json data is <10m old, no more than 5m in the future, and valid (>38),
@@ -88,8 +92,7 @@ function glucose_fresh {
 }
 
 function find_valid_ns_glucose {
-    # TODO: use jq for this if possible
-    cat cgm/ns-glucose.json | json -c "minAgo=(new Date()-new Date(this.dateString))/60/1000; return minAgo < 10 && minAgo > -5 && this.glucose > 38"
+    run_remote_command 'json -f cgm/ns-glucose.json -c "minAgo=(new Date()-new Date(this.dateString))/60/1000; return minAgo < 10 && minAgo > -5 && this.glucose > 38"'
 }
 
 function ns_temptargets {
@@ -167,6 +170,7 @@ function upload {
 
 # grep -q iob monitor/iob.json && find enact/ -mmin -5 -size +5c | grep -q suggested.json && openaps format-ns-status && grep -q iob upload/ns-status.json && ns-upload $NIGHTSCOUT_HOST $API_SECRET devicestatus.json upload/ns-status.json
 function upload_ns_status {
+    set -o pipefail
     #echo Uploading devicestatus
     grep -q iob monitor/iob.json || die "IOB not found"
     # set the timestamp on enact/suggested.json to match the deliverAt time
@@ -176,17 +180,30 @@ function upload_ns_status {
         ls -la enact/suggested.json | awk '{print $6,$7,$8}'
         return 1
     fi
-    format_ns_status && grep -q iob upload/ns-status.json || die "Couldn't generate ns-status.json"
-    ns-upload $NIGHTSCOUT_HOST $API_SECRET devicestatus.json upload/ns-status.json | colorize_json '.[0].openaps.suggested | {BG: .bg, IOB: .IOB, rate: .rate, duration: .duration, units: .units}' || die "Couldn't upload devicestatus to NS"
+    ns_status_file_name=ns-status$(date +"%Y-%m-%d-%T").json
+    format_ns_status $ns_status_file_name && grep -q iob upload/$ns_status_file_name || die "Couldn't generate ns-status.json"
+    # Delete files older than 24 hours.
+    find upload -maxdepth 1 -mmin +1440 -type f -name "ns-status*.json" -delete
+    # Upload the files one by one according to their order.
+    ls upload/ns-status*.json | while read -r file_name ; do
+        if ! grep -q iob $file_name ; then
+            #echo deleteing file $file_name
+            rm $file_name
+            continue
+        fi
+        ns-upload $NIGHTSCOUT_HOST $API_SECRET devicestatus.json $file_name | colorize_json '.[0].openaps.suggested | {BG: .bg, IOB: .IOB, rate: .rate, duration: .duration, units: .units}' || die "Couldn't upload devicestatus to NS"
+        rm $file_name
+    done
 }
 
 #ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json > upload/ns-status.json
 # ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json --uploader monitor/edison-battery.json > upload/ns-status.json
+# first parameter - ns_status file name
 function format_ns_status {
     if [ -s monitor/edison-battery.json ]; then
-        ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json --uploader monitor/edison-battery.json > upload/ns-status.json
+        run_remote_command 'ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json --preferences preferences.json --uploader monitor/edison-battery.json' > upload/$1
     else
-        ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json > upload/ns-status.json
+        run_remote_command 'ns-status monitor/clock-zoned.json monitor/iob.json enact/suggested.json enact/enacted.json monitor/battery.json monitor/reservoir.json monitor/status.json --preferences preferences.json' > upload/$1
     fi
 }
 
@@ -194,7 +211,8 @@ function format_ns_status {
 function upload_recent_treatments {
     #echo Uploading treatments
     format_latest_nightscout_treatments || die "Couldn't format latest NS treatments"
-    if test $(json -f upload/latest-treatments.json -a created_at eventType | wc -l ) -gt 0; then
+
+    if test $(jq -r '.[] |.created_at + " " + .eventType' upload/latest-treatments.json | wc -l ) -gt 0; then
         ns-upload $NIGHTSCOUT_HOST $API_SECRET treatments.json upload/latest-treatments.json | colorize_json || die "Couldn't upload latest treatments to NS"
     else
         echo "No new treatments to upload"
